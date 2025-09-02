@@ -15,7 +15,8 @@ export class LvpStack extends cdk.Stack {
     // ===== Parameters =====
     const connectionArn = new cdk.CfnParameter(this, 'ConnectionArn', {
       type: 'String',
-      description: 'CodeStar Connections ARN for GitHub (e.g., arn:aws:codestar-connections:ap-northeast-1:123456789012:connection/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)',
+      description:
+        'CodeConnections ARN for GitHub (e.g., arn:aws:codeconnections:ap-northeast-1:<ACCOUNT>:connection/<ID>)',
     });
     const githubOwner = new cdk.CfnParameter(this, 'GitHubOwner', {
       type: 'String',
@@ -33,10 +34,8 @@ export class LvpStack extends cdk.Stack {
     // ===== Network =====
     const vpc = new ec2.Vpc(this, 'Vpc', {
       maxAzs: 2,
-      natGateways: 0, // コスト最小化。タスクは public IP 付与
-      subnetConfiguration: [
-        { name: 'public', subnetType: ec2.SubnetType.PUBLIC },
-      ],
+      natGateways: 0, // コスト最小化（Fargateにpublic IP付与）
+      subnetConfiguration: [{ name: 'public', subnetType: ec2.SubnetType.PUBLIC }],
     });
 
     // ===== ECR =====
@@ -82,12 +81,10 @@ export class LvpStack extends cdk.Stack {
       image: ecs.ContainerImage.fromEcrRepository(repo, 'latest'),
       logging: ecs.LogDrivers.awsLogs({ logGroup, streamPrefix: 'app' }),
       portMappings: [{ containerPort: 8501 }],
-      environment: {
-        // 必要なら環境変数をここに
-      },
+      environment: {},
     });
 
-    // SG
+    // ===== Security Groups =====
     const albSg = new ec2.SecurityGroup(this, 'AlbSg', {
       vpc,
       allowAllOutbound: true,
@@ -102,7 +99,7 @@ export class LvpStack extends cdk.Stack {
     });
     svcSg.addIngressRule(albSg, ec2.Port.tcp(8501), 'ALB -> App 8501');
 
-    // Fargate Service（public IP を付与）
+    // ===== Fargate Service（public IP）=====
     const service = new ecs.FargateService(this, 'Service', {
       cluster,
       serviceName: 'lvp-service',
@@ -115,7 +112,7 @@ export class LvpStack extends cdk.Stack {
       maxHealthyPercent: 200,
     });
 
-    // ALB + TargetGroup
+    // ===== ALB + TargetGroup =====
     const alb = new elbv2.ApplicationLoadBalancer(this, 'Alb', {
       vpc,
       internetFacing: true,
@@ -123,8 +120,7 @@ export class LvpStack extends cdk.Stack {
       loadBalancerName: 'lvp-alb',
     });
     const listener = alb.addListener('Http', { port: 80, open: true });
-
-    const tg = listener.addTargets('EcsTg', {
+    listener.addTargets('EcsTg', {
       port: 8501,
       targets: [service],
       healthCheck: {
@@ -138,57 +134,88 @@ export class LvpStack extends cdk.Stack {
     const cbRole = new iam.Role(this, 'CodeBuildRole', {
       assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
     });
+
     // ECR push/pull 権限
     repo.grantPullPush(cbRole);
+
     // ECS 更新関連
-    cbRole.addToPolicy(new iam.PolicyStatement({
-      actions: [
-        'ecs:DescribeClusters',
-        'ecs:DescribeServices',
-        'ecs:DescribeTaskDefinition',
-        'ecs:RegisterTaskDefinition',
-        'ecs:UpdateService',
-      ],
-      resources: ['*'],
-    }));
+    cbRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'ecs:DescribeClusters',
+          'ecs:DescribeServices',
+          'ecs:DescribeTaskDefinition',
+          'ecs:RegisterTaskDefinition',
+          'ecs:UpdateService',
+        ],
+        resources: ['*'],
+      }),
+    );
+
     // Task/Execution Role の PassRole
-    cbRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['iam:PassRole'],
-      resources: [taskRole.roleArn, execRole.roleArn],
-    }));
+    cbRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['iam:PassRole'],
+        resources: [taskRole.roleArn, execRole.roleArn],
+      }),
+    );
+
     // ECR 認証
-    cbRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['ecr:GetAuthorizationToken'],
-      resources: ['*'],
-    }));
-    // CloudWatch Logs 出力
+    cbRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['ecr:GetAuthorizationToken'],
+        resources: ['*'],
+      }),
+    );
+
+    // CodeConnections を使うための権限
+    cbRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'codeconnections:UseConnection',
+          'codeconnections:GetConnection',
+          'codeconnections:GetConnectionToken',
+        ],
+        resources: [connectionArn.valueAsString],
+      }),
+    );
+
+    // CloudWatch Logs 出力用ポリシー（LogGroupを明示指定）
     const cbLogGroup = new logs.LogGroup(this, 'CodeBuildLogGroup', {
       logGroupName: '/codebuild/lvp-example-build',
       retention: logs.RetentionDays.ONE_WEEK,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
+    cbRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['logs:CreateLogStream', 'logs:PutLogEvents', 'logs:DescribeLogStreams', 'logs:CreateLogGroup'],
+        resources: [cbLogGroup.logGroupArn, `${cbLogGroup.logGroupArn}:*`],
+      }),
+    );
 
+    // L2: GitHub ソース + Webhook フィルタ
     const project = new codebuild.Project(this, 'AppBuild', {
       projectName: 'lvp-example-build',
       role: cbRole,
-      source: codebuild.Source.connection({
+      source: codebuild.Source.gitHub({
         owner: githubOwner.valueAsString,
         repo: githubRepo.valueAsString,
-        connectionArn: connectionArn.valueAsString,
         branchOrRef: githubBranch.valueAsString,
-        // アプリ側リポジトリの buildspec.yml を使う
-        buildspec: codebuild.BuildSpec.fromSourceFilename('buildspec.yml'),
+        webhook: true,
+        webhookFilters: [
+          codebuild.FilterGroup.inEventOf(codebuild.EventAction.PUSH).andHeadRefIs(
+            `^refs/heads/${githubBranch.valueAsString}$`,
+          ),
+        ],
+        reportBuildStatus: true,
       }),
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
         privileged: true, // Docker build 用
         computeType: codebuild.ComputeType.SMALL,
       },
-      logging: {
-        cloudWatch: {
-          logGroup: cbLogGroup,
-        },
-      },
+      logging: { cloudWatch: { logGroup: cbLogGroup } },
+      buildSpec: codebuild.BuildSpec.fromSourceFilename('buildspec.yml'),
       environmentVariables: {
         IMAGE_REPO_NAME: { value: repo.repositoryName },
         ECS_CLUSTER_NAME: { value: cluster.clusterName },
@@ -198,22 +225,13 @@ export class LvpStack extends cdk.Stack {
         AWS_DEFAULT_REGION: { value: cdk.Stack.of(this).region },
         AWS_ACCOUNT_ID: { value: cdk.Stack.of(this).account },
       },
-      // Build バッジなど必要なら追加
     });
 
-    // Webhook トリガ（PUSH のみ、main ブランチ）
-    project.enableBatchBuilds(); // 無視しても可（ここでは影響なし）
-    project.onEvent('Ignore'); // ダミー（実質不要）
-
-    // CodeBuild の Webhook フィルタ
-    new codebuild.ProjectTriggers(this, 'Triggers', {
-      project,
-      webhook: true,
-      filterGroups: [
-        [
-          codebuild.FilterGroup.inEventOf(codebuild.EventAction.PUSH).andBranchIs(githubBranch.valueAsString),
-        ],
-      ],
+    // L1 に降りて Source.Auth を上書き（CODECONNECTIONS を明示）
+    const cfn = project.node.defaultChild as codebuild.CfnProject;
+    cfn.addPropertyOverride('Source.Auth', {
+      Type: 'CODECONNECTIONS',
+      Resource: connectionArn.valueAsString,
     });
 
     // ===== Outputs =====
