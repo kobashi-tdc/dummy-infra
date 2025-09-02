@@ -20,11 +20,11 @@ export class LvpStack extends cdk.Stack {
     });
     const githubOwner = new cdk.CfnParameter(this, 'GitHubOwner', {
       type: 'String',
-      default: 'kobashi-yoshizumi',
+      default: 'kobashi-tdc',
     });
     const githubRepo = new cdk.CfnParameter(this, 'GitHubRepo', {
       type: 'String',
-      default: 'lvp-example',
+      default: 'dummy',
     });
     const githubBranch = new cdk.CfnParameter(this, 'GitHubBranch', {
       type: 'String',
@@ -97,7 +97,7 @@ export class LvpStack extends cdk.Stack {
       allowAllOutbound: true,
       description: 'Service SG',
     });
-    svcSg.addIngressRule(albSg, ec2.Port.tcp(8501), 'ALB -> App 8501');
+    svcSg.addIngressRule(albSg, ec2.Port.tcp(8501), 'ALB to App 8501');
 
     // ===== Fargate Service（public IP）=====
     const service = new ecs.FargateService(this, 'Service', {
