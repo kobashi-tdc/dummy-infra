@@ -1,0 +1,37 @@
+version: 0.2
+env:
+  variables:
+    IMAGE_REPO_NAME: "lvp-example"
+    ECS_CLUSTER_NAME: "lvp-cluster"
+    ECS_SERVICE_NAME: "lvp-service"
+    TASK_FAMILY: "lvp-example-task"
+    CONTAINER_NAME: "web"
+phases:
+  pre_build:
+    commands:
+      - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - REGION=${AWS_DEFAULT_REGION:-$AWS_REGION}
+      - REPO_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${IMAGE_REPO_NAME}"
+      - aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com
+      - IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}
+  build:
+    commands:
+      - cd "$CODEBUILD_SRC_DIR"        # Primary = lvp-example
+      - docker build -t ${REPO_URI}:${IMAGE_TAG} -t ${REPO_URI}:latest .
+  post_build:
+    commands:
+      - docker push ${REPO_URI}:${IMAGE_TAG}
+      - docker push ${REPO_URI}:latest
+      - |
+        TD=$(aws ecs describe-task-definition --task-definition ${TASK_FAMILY})
+        NEW_TD=$(echo "$TD" \
+          | jq --arg IMG "${REPO_URI}:${IMAGE_TAG}" --arg NAME "${CONTAINER_NAME}" \
+          '.taskDefinition
+           | {family, networkMode, taskRoleArn, executionRoleArn, cpu, memory, requiresCompatibilities, runtimePlatform, ephemeralStorage, volumes, placementConstraints, proxyConfiguration, inferenceAccelerators, ipcMode, pidMode, containerDefinitions}
+           | .containerDefinitions |= (map(if .name == $NAME then .image=$IMG else . end))')
+        echo "$NEW_TD" > new-td.json
+        aws ecs register-task-definition --cli-input-json file://new-td.json >/dev/null
+      - aws ecs update-service --cluster ${ECS_CLUSTER_NAME} --service ${ECS_SERVICE_NAME} --task-definition ${TASK_FAMILY} --force-new-deployment
+artifacts:
+  files: ["**/*"]
+  discard-paths: yes
