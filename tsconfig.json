@@ -1,15 +1,13 @@
 {
   "compilerOptions": {
-    "target": "ES2021",
-    "module": "NodeNext",
-    "lib": ["ES2021"],
-    "moduleResolution": "NodeNext",
-    "strict": true,
-    "noImplicitAny": false,
     "outDir": "dist",
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
     "esModuleInterop": true,
-    "resolveJsonModule": true,
-    "skipLibCheck": true
+    "sourceMap": false,
+    "declaration": false
   },
-  "include": ["bin", "lib"]
+  "include": ["bin/**/*.ts", "lib/**/*.ts"]
 }

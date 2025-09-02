@@ -1,6 +1,3 @@
 {
-  "app": "npx ts-node --esm bin/lvp-infra-configurator.ts",
-  "context": {
-    "@aws-cdk/core:newStyleStackSynthesis": true
-  }
+  "app": "node dist/bin/lvp-infra-configurator.js"
 }
