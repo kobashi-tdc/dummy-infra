@@ -120,8 +120,9 @@ export class LvpStack extends cdk.Stack {
       loadBalancerName: 'lvp-alb',
     });
     const listener = alb.addListener('Http', { port: 80, open: true });
-    listener.addTargets('EcsTg', {
+    const tg = listener.addTargets('EcsTg', {
       port: 8501,
+      protocol: elbv2.ApplicationProtocol.HTTP, // ★追加
       targets: [service],
       healthCheck: {
         path: '/',
