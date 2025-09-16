@@ -104,12 +104,13 @@ export class LvpStack extends cdk.Stack {
       cluster,
       serviceName: 'lvp-service',
       taskDefinition: taskDef,
-      desiredCount: 1,
+      desiredCount: 0,
       assignPublicIp: true,
       securityGroups: [svcSg],
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       minHealthyPercent: 50,
       maxHealthyPercent: 200,
+      circuitBreaker: { rollback: true } 
     });
 
     // ===== ALB + TargetGroup =====
